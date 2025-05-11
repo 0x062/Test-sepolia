@@ -21,10 +21,11 @@ if (!WALLET_ADDRESS) {
     console.log('Resolved cookies path =', path.resolve(__dirname, process.env.COOKIES_PATH));
 
     // Load cookies
-    if (!fs.existsSync(path.resolve(__dirname, process.env.COOKIES_PATH))) {
+    const cookiePath = path.resolve(__dirname, process.env.COOKIES_PATH);
+    if (!fs.existsSync(cookiePath)) {
       throw new Error(`${process.env.COOKIES_PATH} not found.`);
     }
-    const cookies = JSON.parse(fs.readFileSync(path.resolve(__dirname, process.env.COOKIES_PATH), 'utf-8'));
+    const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf-8'));
     console.log(`Loaded ${cookies.length} cookies.`);
 
     // Launch browser
@@ -37,37 +38,48 @@ if (!WALLET_ADDRESS) {
     await page.goto(faucetUrl, { waitUntil: 'networkidle2' });
     console.log(`Navigated to ${faucetUrl}`);
 
-    // Wait for the web3-faucet custom element to load
-    await page.waitForSelector('web3-faucet', { timeout: 60000 });
+    // Wait for dynamic load
+    await page.waitForTimeout(5000);
 
-    // Fill wallet address via shadow DOM
-    await page.evaluate((addr) => {
+    // Find frame containing web3-faucet
+    let faucetFrame = null;
+    for (const frame of page.frames()) {
+      if (await frame.$('web3-faucet')) {
+        faucetFrame = frame;
+        console.log('Found web3-faucet in frame:', frame.url());
+        break;
+      }
+    }
+    if (!faucetFrame) {
+      throw new Error('web3-faucet element not found in any frame');
+    }
+
+    // Fill wallet address via shadow DOM, using placeholder selector
+    await faucetFrame.evaluate((addr) => {
       const faucet = document.querySelector('web3-faucet');
-      const input = faucet.shadowRoot.querySelector('input');
+      const input = faucet.shadowRoot.querySelector('input[placeholder="Wallet address or ENS name*"]');
       input.value = addr;
       input.dispatchEvent(new Event('input', { bubbles: true }));
-      console.log('Wallet address set in shadow DOM');
+      console.log('Wallet address set');
     }, WALLET_ADDRESS);
 
-    // Click the claim button via shadow DOM
-    await page.evaluate(() => {
+    // Click claim button via shadow DOM (assumes only one button)
+    await faucetFrame.evaluate(() => {
       const faucet = document.querySelector('web3-faucet');
       const button = faucet.shadowRoot.querySelector('button');
       button.click();
-      console.log('Clicked claim button in shadow DOM');
+      console.log('Clicked claim');
     });
 
     // Wait and extract transaction hash
-    await page.waitForFunction(() => {
+    const txHash = await faucetFrame.evaluate(() => {
       const faucet = document.querySelector('web3-faucet');
       const link = faucet.shadowRoot.querySelector('a[href*="etherscan.io/tx"]');
-      return link && link.textContent.trim().length > 0;
-    }, { timeout: 60000 });
-
-    const txHash = await page.evaluate(() => {
-      const faucet = document.querySelector('web3-faucet');
-      return faucet.shadowRoot.querySelector('a[href*="etherscan.io/tx"]').textContent.trim();
+      return link ? link.textContent.trim() : null;
     });
+    if (!txHash) {
+      throw new Error('Transaction hash not found');
+    }
     console.log(`✅ Claimed! TX hash: ${txHash}`);
 
     await browser.close();
