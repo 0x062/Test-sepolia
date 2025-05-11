@@ -28,72 +28,59 @@ if (!WALLET_ADDRESS) {
     const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf-8'));
     console.log(`Loaded ${cookies.length} cookies.`);
 
-    // Launch browser
+    // Launch browser and set cookies
     const browser = await puppeteer.launch({ headless: true });
     const page = await browser.newPage();
     await page.setCookie(...cookies);
 
-    // Navigate to faucet page
+    // Navigate to faucet
     const faucetUrl = 'https://cloud.google.com/application/web3/faucet/ethereum/sepolia';
     await page.goto(faucetUrl, { waitUntil: 'networkidle2' });
     console.log(`Navigated to ${faucetUrl}`);
 
-    // Short delay to allow scripts to load
+    // Reload to apply authentication cookies
+    await page.reload({ waitUntil: 'networkidle2' });
+
+    // Short wait for dynamic load
     await new Promise(res => setTimeout(res, 5000));
 
-    // Debug: list all frame URLs
-    const frameUrls = page.frames().map(f => f.url());
-    console.log('Frame URLs:');
-    frameUrls.forEach((url, idx) => console.log(`${idx}: ${url}`));
-
-    // Attempt to find web3-faucet element in main page
-    let faucetHandle = await page.$('web3-faucet');
-    if (faucetHandle) console.log('Found web3-faucet in main page');
-
-    // Find frame containing web3-faucet
-    let faucetFrame = page;
-    if (!faucetHandle) {
+    // Try finding input on main page
+    let context = page;
+    let location = 'main page';
+    const inputSelector = 'input[placeholder="Wallet address or ENS name*"]';
+    if (!await page.$(inputSelector)) {
+      // If not found, search in frames
       for (const frame of page.frames()) {
-        try {
-          if (await frame.$('web3-faucet')) {
-            faucetFrame = frame;
-            console.log('Found web3-faucet in frame:', frame.url());
-            break;
-          }
-        } catch {}
+        if (await frame.$(inputSelector)) {
+          context = frame;
+          location = `frame ${frame.url()}`;
+          console.log(`Found input in ${location}`);
+          break;
+        }
       }
+    } else {
+      console.log('Found input in main page');
     }
-    if (!await faucetFrame.$('web3-faucet')) {
-      throw new Error('web3-faucet element not found in any frame or main page');
+
+    // Ensure input found
+    if (!await context.$(inputSelector)) {
+      throw new Error('Input element not found in page or frames');
     }
 
-    // Now operate within faucetFrame (could be page or specific frame)
-    // Fill wallet address via shadow DOM using placeholder selector
-    await faucetFrame.evaluate((addr) => {
-      const faucet = document.querySelector('web3-faucet');
-      const input = faucet.shadowRoot.querySelector('input[placeholder="Wallet address or ENS name*"]');
-      if (!input) throw new Error('Input element not found');
-      input.value = addr;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      console.log('Wallet address set');
-    }, WALLET_ADDRESS);
+    // Fill wallet address
+    await context.type(inputSelector, WALLET_ADDRESS);
+    console.log(`Entered wallet address in ${location}`);
 
-    // Click claim button via shadow DOM
-    await faucetFrame.evaluate(() => {
-      const faucet = document.querySelector('web3-faucet');
-      const button = faucet.shadowRoot.querySelector('button');
-      if (!button) throw new Error('Claim button not found');
-      button.click();
-      console.log('Clicked claim');
-    });
+    // Click claim button
+    const buttonSelector = 'button';
+    await context.waitForSelector(buttonSelector, { timeout: 60000 });
+    await context.click(buttonSelector);
+    console.log('Clicked claim button');
 
-    // Delay and extract transaction hash
+    // Wait and extract transaction hash
     await new Promise(res => setTimeout(res, 5000));
-    const txHash = await faucetFrame.evaluate(() => {
-      const faucet = document.querySelector('web3-faucet');
-      const link = faucet.shadowRoot.querySelector('a[href*="etherscan.io/tx"]');
-      return link ? link.textContent.trim() : null;
-    });
+    const txSelector = 'a[href*="etherscan.io/tx"]';
+    let txHash = await context.$eval(txSelector, el => el.textContent.trim()).catch(() => null);
     if (!txHash) {
       throw new Error('Transaction hash not found');
     }
