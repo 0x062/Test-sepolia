@@ -11,6 +11,8 @@ const COOKIES_PATH = process.env.COOKIES_PATH
   ? path.resolve(__dirname, process.env.COOKIES_PATH)
   : path.resolve(__dirname, 'script-cookies.json');
 const FAUCET_URL = 'https://cloud.google.com/application/web3/faucet/ethereum/sepolia';
+const DUMP_HTML_PATH = path.resolve(__dirname, 'debug_after_claim.html');
+const DUMP_SCREENSHOT_PATH = path.resolve(__dirname, 'debug_after_claim.png');
 
 if (!WALLET_ADDRESS) {
   console.error('Error: WALLET_ADDRESS not set in .env');
@@ -41,30 +43,26 @@ if (!WALLET_ADDRESS) {
     console.log(`Navigated to ${FAUCET_URL}`);
 
     // 4. Isi wallet address
-    //    cari input pertama yang terlihat
     const inputs = await page.$$('input');
-    const input = inputs.find(async h => {
-      const b = await h.boundingBox();
-      return b && b.width > 0 && b.height > 0;
-    });
+    const input = await findFirstVisible(inputs, page);
     if (!input) throw new Error('No visible input found');
     await input.click({ clickCount: 3 });
     await input.type(WALLET_ADDRESS, { delay: 100 });
     console.log('Entered wallet address');
 
-    // 5. Klik tombol Claim pertama yang terlihat
+    // 5. Klik tombol Claim
     const buttons = await page.$$('button');
-    const btn = buttons.find(async h => {
-      const b = await h.boundingBox();
-      return b && b.width > 0 && b.height > 0;
-    });
+    const btn = await findFirstVisible(buttons, page);
     if (!btn) throw new Error('No visible button found');
     await btn.click();
     console.log('Clicked claim button');
 
-    // 6. (Debug) ambil screenshot dan dump HTML sebelum menunggu TX
-    await page.screenshot({ path: 'debug_after_claim.png', fullPage: true });
-    console.log('DEBUG HTML snippet:', (await page.evaluate(() => document.body.innerHTML))).slice(0,200);
+    // 6. Debug: take screenshot and dump HTML
+    await page.screenshot({ path: DUMP_SCREENSHOT_PATH, fullPage: true });
+    const bodyHTML = await page.evaluate(() => document.body.innerHTML);
+    fs.writeFileSync(DUMP_HTML_PATH, bodyHTML, 'utf-8');
+    console.log(`HTML dump saved to ${DUMP_HTML_PATH}`);
+    console.log(`Screenshot saved to ${DUMP_SCREENSHOT_PATH}`);
 
     // 7. Tunggu dan ekstrak TX hash via piercing selector
     await page.waitForSelector(
@@ -83,3 +81,14 @@ if (!WALLET_ADDRESS) {
     process.exit(1);
   }
 })();
+
+// Utility function for visibility check
+async function findFirstVisible(handles, page) {
+  for (const handle of handles) {
+    const box = await handle.boundingBox();
+    if (box && box.width > 0 && box.height > 0) {
+      return handle;
+    }
+  }
+  return null;
+}
