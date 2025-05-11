@@ -33,57 +33,49 @@ if (!WALLET_ADDRESS) {
     const page = await browser.newPage();
     await page.setCookie(...cookies);
 
-    // Navigate to faucet
+    // Navigate and reload
     const faucetUrl = 'https://cloud.google.com/application/web3/faucet/ethereum/sepolia';
     await page.goto(faucetUrl, { waitUntil: 'networkidle2' });
-    console.log(`Navigated to ${faucetUrl}`);
-
-    // Reload to apply authentication cookies
     await page.reload({ waitUntil: 'networkidle2' });
+    console.log(`Loaded and reloaded ${faucetUrl}`);
 
-    // Short wait for dynamic load
+    // Wait for dynamic load
     await new Promise(res => setTimeout(res, 5000));
 
-    // Try finding input on main page
-    let context = page;
-    let location = 'main page';
-    const inputSelector = 'input[placeholder="Wallet address or ENS name*"]';
-    if (!await page.$(inputSelector)) {
-      // If not found, search in frames
-      for (const frame of page.frames()) {
-        if (await frame.$(inputSelector)) {
-          context = frame;
-          location = `frame ${frame.url()}`;
-          console.log(`Found input in ${location}`);
-          break;
-        }
-      }
-    } else {
-      console.log('Found input in main page');
+    // DEBUG: list all placeholders in main page
+    const placeholders = await page.$$eval('[placeholder]', els =>
+      els.map(el => ({ tag: el.tagName, placeholder: el.getAttribute('placeholder') }))
+    );
+    console.log('Placeholders on main page:', placeholders);
+
+    // DEBUG: list placeholders in each frame
+    for (const frame of page.frames()) {
+      try {
+        const phs = await frame.$$eval('[placeholder]', els =>
+          els.map(el => ({ tag: el.tagName, placeholder: el.getAttribute('placeholder') }))
+        );
+        console.log(`Placeholders in frame ${frame.url()}:`, phs);
+      } catch (e) {}
     }
 
-    // Ensure input found
-    if (!await context.$(inputSelector)) {
-      throw new Error('Input element not found in page or frames');
+    // After inspecting logs, set the correct selector below:
+    const addressSelector = 'input[placeholder="Wallet address or ENS name*"]'; // adjust as needed
+    const buttonSelector = 'button'; // adjust if needed
+
+    // Validate selector
+    if (!await page.$(addressSelector) && !page.frames().some(f => f.$(addressSelector))) {
+      throw new Error(`Selector ${addressSelector} not found; please update based on placeholders.`);
     }
 
-    // Fill wallet address
-    await context.type(inputSelector, WALLET_ADDRESS);
-    console.log(`Entered wallet address in ${location}`);
-
-    // Click claim button
-    const buttonSelector = 'button';
-    await context.waitForSelector(buttonSelector, { timeout: 60000 });
-    await context.click(buttonSelector);
+    // Fill address and click claim
+    await page.type(addressSelector, WALLET_ADDRESS);
+    console.log('Entered wallet address');
+    await page.click(buttonSelector);
     console.log('Clicked claim button');
 
-    // Wait and extract transaction hash
+    // Wait and extract TX hash
     await new Promise(res => setTimeout(res, 5000));
-    const txSelector = 'a[href*="etherscan.io/tx"]';
-    let txHash = await context.$eval(txSelector, el => el.textContent.trim()).catch(() => null);
-    if (!txHash) {
-      throw new Error('Transaction hash not found');
-    }
+    const txHash = await page.$eval('a[href*="etherscan.io/tx"]', el => el.textContent.trim());
     console.log(`✅ Claimed! TX hash: ${txHash}`);
 
     await browser.close();
