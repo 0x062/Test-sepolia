@@ -21,6 +21,32 @@ if (!WALLET_ADDRESS) {
 
 (async () => {
   try {
+    // 0. Ensure cookies and authentication
+    async function refreshCookies(origin) {
+      console.log('Opening browser for manual login...');
+      const browser = await puppeteer.launch({ headless: false });
+      const page = await browser.newPage();
+      await page.goto(origin, { waitUntil: 'networkidle2' });
+      console.log('Please complete Google login in the opened browser, then press ENTER here');
+      await new Promise(resolve => {
+        process.stdin.resume();
+        process.stdin.once('data', () => resolve());
+      });
+      const newCookies = await page.cookies();
+      fs.writeFileSync(COOKIES_PATH, JSON.stringify(newCookies, null, 2));
+      console.log(`Saved new cookies to ${COOKIES_PATH}`);
+      await browser.close();
+    }
+
+    const origin = new URL(FAUCET_URL).origin;
+    // If no cookie file or expired, refresh
+    if (!fs.existsSync(COOKIES_PATH)) {
+      await refreshCookies(origin);
+    }
+    const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
+    console.log(`Loaded ${cookies.length} cookies from ${COOKIES_PATH}`);
+
+    // 1. Launch browser & set cookies
     // 1. Load cookies
     if (!fs.existsSync(COOKIES_PATH)) {
       throw new Error(`Cookie file not found at ${COOKIES_PATH}`);
