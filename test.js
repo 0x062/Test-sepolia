@@ -21,21 +21,21 @@ if (!WALLET_ADDRESS) {
 
 (async () => {
   try {
-    // Function to refresh cookies by manual login
+    // Function to refresh cookies via manual login
     async function refreshCookies(origin) {
       console.log('Opening browser for manual login...');
-      const browser = await puppeteer.launch({ headless: false });
-      const page = await browser.newPage();
-      await page.goto(origin, { waitUntil: 'networkidle2' });
+      const browserManual = await puppeteer.launch({ headless: false });
+      const pageManual = await browserManual.newPage();
+      await pageManual.goto(origin, { waitUntil: 'networkidle2' });
       console.log('Please complete Google login, then press ENTER in this terminal');
       await new Promise(resolve => {
         process.stdin.resume();
         process.stdin.once('data', () => resolve());
       });
-      const newCookies = await page.cookies();
+      const newCookies = await pageManual.cookies();
       fs.writeFileSync(COOKIES_PATH, JSON.stringify(newCookies, null, 2));
       console.log(`Saved cookies to ${COOKIES_PATH}`);
-      await browser.close();
+      await browserManual.close();
       return newCookies;
     }
 
@@ -49,35 +49,34 @@ if (!WALLET_ADDRESS) {
       console.log(`Loaded ${loadedCookies.length} cookies from ${COOKIES_PATH}`);
     }
 
-    // 1. Launch headless browser and apply cookies
-    const browser = await puppeteer.launch({ headless: true });
-    const page = await browser.newPage();
+    // Launch headless browser
+    let browser = await puppeteer.launch({ headless: true });
+    let page = await browser.newPage();
+
+    // Apply cookies and reload
     await page.goto(origin, { waitUntil: 'networkidle2' });
     await page.setCookie(...loadedCookies);
     console.log('Cookies set, reloading to apply session...');
     await page.reload({ waitUntil: 'networkidle2' });
 
-    // 2. Check for Sign In button indicating expired session
-    const signIn = await page.$x("//button[contains(., 'Sign in')] | //a[contains(., 'Sign in')]");
-    if (signIn.length > 0) {
-      console.log('Sign in button detected. Session expired or not logged in. Refreshing cookies...');
+    // Validate login: check for Sign in button
+    const [signIn] = await page.$x("//button[contains(., 'Sign in')] | //a[contains(., 'Sign in')]");
+    if (signIn) {
+      console.log('Sign in button detected. Session invalid, refreshing cookies...');
       await browser.close();
       loadedCookies = await refreshCookies(origin);
-      // Relaunch headless browser with new cookies
-      const newBrowser = await puppeteer.launch({ headless: true });
-      const newPage = await newBrowser.newPage();
-      await newPage.goto(origin, { waitUntil: 'networkidle2' });
-      await newPage.setCookie(...loadedCookies);
-      await newPage.reload({ waitUntil: 'networkidle2' });
-      page = newPage;
-      browser = newBrowser;
+      browser = await puppeteer.launch({ headless: true });
+      page = await browser.newPage();
+      await page.goto(origin, { waitUntil: 'networkidle2' });
+      await page.setCookie(...loadedCookies);
+      await page.reload({ waitUntil: 'networkidle2' });
     }
 
-    // 3. Navigate to faucet page
+    // Navigate to faucet
     await page.goto(FAUCET_URL, { waitUntil: 'networkidle2' });
     console.log(`Navigated to ${FAUCET_URL}`);
 
-    // 4. Fill wallet address
+    // Enter wallet address
     const inputs = await page.$$('input');
     const input = await findFirstVisible(inputs, page);
     if (!input) throw new Error('No visible input found');
@@ -85,22 +84,19 @@ if (!WALLET_ADDRESS) {
     await input.type(WALLET_ADDRESS, { delay: 100 });
     console.log('Entered wallet address');
 
-    // 5. Click Receive button via XPath
-    const [btn] = await page.$x("//button[contains(., 'Receive 0.05 Sepolia ETH')]");
-    if (!btn) throw new Error('Receive button not found');
-    await btn.click();
+    // Click Receive button via XPath + waitForXPath
+    const xpath = "//button[contains(text(), 'Receive 0.05 Sepolia ETH')]";
+    const btnHandle = await page.waitForXPath(xpath, { timeout: 10000 });
+    if (!btnHandle) throw new Error('Receive button not found');
+    await btnHandle.click();
     console.log('Clicked "Receive 0.05 Sepolia ETH" button');
 
-    // 6. Debug dump
+    // Debug dump
     await page.screenshot({ path: DUMP_SCREENSHOT_PATH, fullPage: true });
-    fs.writeFileSync(
-      DUMP_HTML_PATH,
-      await page.evaluate(() => document.body.innerHTML),
-      'utf-8'
-    );
+    fs.writeFileSync(DUMP_HTML_PATH, await page.evaluate(() => document.body.innerHTML), 'utf-8');
     console.log('Dumped HTML & screenshot');
 
-    // 7. Wait for transaction hash
+    // Wait for transaction hash
     const txHash = await page.evaluate(() => new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Timeout waiting for TX hash')), 120000);
       const obs = new MutationObserver(() => {
