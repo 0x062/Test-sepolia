@@ -51,16 +51,15 @@ if (!WALLET_ADDRESS) {
     console.log('Entered wallet address');
 
     // 5. Tunggu elemen web3-faucet dan klik tombol via traversal shadow DOM
-    await page.waitForTimeout(2000); // beri sedikit waktu render
+    // Ganti page.waitForTimeout yang tidak tersedia
+    await new Promise(resolve => setTimeout(resolve, 2000)); // beri sedikit waktu render
     await page.evaluate(() => {
       function findInShadow(root) {
-        // search direct shadow root
         if (root.querySelector && root.shadowRoot) {
           const btns = Array.from(root.shadowRoot.querySelectorAll('button'));
           const found = btns.find(b => b.textContent.includes('Receive 0.05 Sepolia ETH'));
           if (found) return found;
         }
-        // search children
         const children = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
         for (const el of children) {
           if (el.shadowRoot) {
@@ -91,7 +90,7 @@ if (!WALLET_ADDRESS) {
       txHash = await page.evaluate(() => {
         function observeShadow(root) {
           return new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error('Timeout waiting for TX hash')), 120_000);
+            const timeout = setTimeout(() => reject(new Error('Timeout waiting for TX hash')), 120000);
             const obs = new MutationObserver(() => {
               const link = root.querySelector('a[href*="etherscan.io/tx"]');
               if (link?.textContent.trim()) {
@@ -103,7 +102,6 @@ if (!WALLET_ADDRESS) {
             obs.observe(root, { childList: true, subtree: true });
           });
         }
-        // find shadow root containing faucet
         let faucetShadow;
         const hosts = document.querySelectorAll('*');
         for (const el of hosts) {
@@ -127,8 +125,7 @@ if (!WALLET_ADDRESS) {
   }
 })();
 
-// Utility function for visibility check
-async function findFirstVisible(handles, page) {
+// Utility function for visibility check\async function findFirstVisible(handles, page) {
   for (const handle of handles) {
     const box = await handle.boundingBox();
     if (box && box.width > 0 && box.height > 0) {
