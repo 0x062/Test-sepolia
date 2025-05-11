@@ -29,19 +29,19 @@ if (!WALLET_ADDRESS) {
     const browser = await puppeteer.launch({ headless: true });
     const page = await browser.newPage();
 
-    // Navigate to origin of cookies to set them properly, then refresh
+    // Navigate to origin and set cookies, then reload
     const origin = new URL(FAUCET_URL).origin;
     await page.goto(origin, { waitUntil: 'networkidle2' });
     await page.setCookie(...cookies);
     console.log('Cookies set, refreshing to apply authentication...');
     await page.reload({ waitUntil: 'networkidle2' });
 
-    // Navigate to faucet page and ensure content is loaded
+    // Navigate to faucet page and reload
     await page.goto(FAUCET_URL, { waitUntil: 'networkidle2' });
     await page.reload({ waitUntil: 'networkidle2' });
     console.log(`Navigated and reloaded ${FAUCET_URL}`);
 
-    // Short delay for dynamic scripts
+    // Short delay
     await new Promise(res => setTimeout(res, 3000));
 
     // Utility to find first visible element
@@ -70,10 +70,20 @@ if (!WALLET_ADDRESS) {
     await buttonHandle.click();
     console.log('Clicked claim button');
 
-    // Wait and extract transaction hash
-    await new Promise(res => setTimeout(res, 5000));
-    const txHash = await page.$eval('a[href*="etherscan.io/tx"]', el => el.textContent.trim());
-    if (!txHash) throw new Error('Transaction hash not found');
+    // Wait for TX hash in shadow DOM
+    await page.waitForFunction(() => {
+      const faucet = document.querySelector('web3-faucet');
+      if (!faucet || !faucet.shadowRoot) return false;
+      const link = faucet.shadowRoot.querySelector('a[href*="etherscan.io/tx"]');
+      return link && link.textContent.trim().length > 0;
+    }, { timeout: 60000 });
+
+    // Extract transaction hash from shadow DOM
+    const txHash = await page.evaluate(() => {
+      const faucet = document.querySelector('web3-faucet');
+      const link = faucet.shadowRoot.querySelector('a[href*="etherscan.io/tx"]');
+      return link.textContent.trim();
+    });
     console.log(`✅ Claimed! TX hash: ${txHash}`);
 
     await browser.close();
