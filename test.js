@@ -7,7 +7,7 @@ const path = require('path');
 
 // ================= Configuration =================
 const WALLET_ADDRESS = process.env.WALLET_ADDRESS;
-const COOKIES_PATH = process.env.COOKIES_PATH || path.resolve(__dirname, 'cookies.json');
+const COOKIES_PATH = process.env.COOKIES_PATH || path.resolve(__dirname, 'script-cookies.json');
 
 if (!WALLET_ADDRESS) {
   console.error('Error: WALLET_ADDRESS not set in .env');
@@ -16,11 +16,15 @@ if (!WALLET_ADDRESS) {
 
 (async () => {
   try {
+    // Debug cookie path
+    console.log('ENV COOKIES_PATH =', process.env.COOKIES_PATH);
+    console.log('Resolved cookies path =', path.resolve(__dirname, process.env.COOKIES_PATH));
+
     // Load cookies
-    if (!fs.existsSync(COOKIES_PATH)) {
-      throw new Error(`${COOKIES_PATH} not found. Export cookies.json first.`);
+    if (!fs.existsSync(path.resolve(__dirname, process.env.COOKIES_PATH))) {
+      throw new Error(`${process.env.COOKIES_PATH} not found.`);
     }
-    const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
+    const cookies = JSON.parse(fs.readFileSync(path.resolve(__dirname, process.env.COOKIES_PATH), 'utf-8'));
     console.log(`Loaded ${cookies.length} cookies.`);
 
     // Launch browser
@@ -33,36 +37,38 @@ if (!WALLET_ADDRESS) {
     await page.goto(faucetUrl, { waitUntil: 'networkidle2' });
     console.log(`Navigated to ${faucetUrl}`);
 
-    // Detect iframe
-    const frameHandle = await page.waitForSelector('iframe', { timeout: 60000 });
-    const frame = await frameHandle.contentFrame();
-    if (!frame) throw new Error('Cannot access iframe content');
+    // Wait for the web3-faucet custom element to load
+    await page.waitForSelector('web3-faucet', { timeout: 60000 });
 
-    // Debug: list elements to find selectors
-    console.log('Inputs:');
-    (await frame.$$eval('input', els => els.map(e => e.outerHTML))).forEach(html => console.log(html));
-    console.log('\nButtons:');
-    (await frame.$$eval('button', els => els.map(e => e.outerHTML))).forEach(html => console.log(html));
-    console.log('\nAnchors:');
-    (await frame.$$eval('a', els => els.map(e => e.outerHTML))).forEach(html => console.log(html));
+    // Fill wallet address via shadow DOM
+    await page.evaluate((addr) => {
+      const faucet = document.querySelector('web3-faucet');
+      const input = faucet.shadowRoot.querySelector('input');
+      input.value = addr;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      console.log('Wallet address set in shadow DOM');
+    }, WALLET_ADDRESS);
 
-    // TODO: Adjust selectors below based on output above
-    const addressSelector = 'input[aria-label="Wallet address"]';
-    const claimSelector = 'button[aria-label="Claim Sepolia ETH"]';
+    // Click the claim button via shadow DOM
+    await page.evaluate(() => {
+      const faucet = document.querySelector('web3-faucet');
+      const button = faucet.shadowRoot.querySelector('button');
+      button.click();
+      console.log('Clicked claim button in shadow DOM');
+    });
 
-    // Fill and claim
-    await frame.waitForSelector(addressSelector, { timeout: 60000 });
-    await frame.type(addressSelector, WALLET_ADDRESS);
-    console.log(`Entered wallet address`);
+    // Wait and extract transaction hash
+    await page.waitForFunction(() => {
+      const faucet = document.querySelector('web3-faucet');
+      const link = faucet.shadowRoot.querySelector('a[href*="etherscan.io/tx"]');
+      return link && link.textContent.trim().length > 0;
+    }, { timeout: 60000 });
 
-    await frame.waitForSelector(claimSelector, { timeout: 60000 });
-    await frame.click(claimSelector);
-    console.log('Clicked claim');
-
-    // Extract TX hash
-    await frame.waitForSelector('a[href*="etherscan.io/tx"]', { timeout: 60000 });
-    const txHash = await frame.$eval('a[href*="etherscan.io/tx"]', a => a.textContent.trim());
-    console.log(`✅ TX Hash: ${txHash}`);
+    const txHash = await page.evaluate(() => {
+      const faucet = document.querySelector('web3-faucet');
+      return faucet.shadowRoot.querySelector('a[href*="etherscan.io/tx"]').textContent.trim();
+    });
+    console.log(`✅ Claimed! TX hash: ${txHash}`);
 
     await browser.close();
   } catch (err) {
