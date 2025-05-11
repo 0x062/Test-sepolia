@@ -21,63 +21,45 @@ if (!WALLET_ADDRESS) {
 
 (async () => {
   try {
-    // Manual login to refresh cookies if needed
-    async function refreshCookies(origin) {
-      console.log('Please login in the opened browser window...');
-      const browserManual = await puppeteer.launch({ headless: false });
-      const pageManual = await browserManual.newPage();
-      await pageManual.goto(origin, { waitUntil: 'networkidle2' });
-      console.log('Complete login and then press ENTER here.');
-      await new Promise(resolve => process.stdin.once('data', resolve));
-      const newCookies = await pageManual.cookies();
-      fs.writeFileSync(COOKIES_PATH, JSON.stringify(newCookies, null, 2));
-      await browserManual.close();
-      return newCookies;
-    }
-
-    // Prepare cookies
-    const origin = new URL(FAUCET_URL).origin;
-    let cookies;
+    // 1. Load cookies or instruct manual refresh
     if (!fs.existsSync(COOKIES_PATH)) {
-      cookies = await refreshCookies(origin);
-    } else {
-      cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
-      console.log(`Loaded ${cookies.length} cookies`);
+      console.error('Cookie file not found. Please login manually and save cookies to', COOKIES_PATH);
+      process.exit(1);
     }
+    const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
+    console.log(`Loaded ${cookies.length} cookies`);
 
-    // Launch headless
-    let browser = await puppeteer.launch({ headless: true });
-    let page = await browser.newPage();
+    // 2. Launch headless browser
+    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+    const page = await browser.newPage();
+
+    // 3. Apply cookies and validate session
+    const origin = new URL(FAUCET_URL).origin;
     await page.goto(origin, { waitUntil: 'networkidle2' });
     await page.setCookie(...cookies);
     await page.reload({ waitUntil: 'networkidle2' });
 
-    // Check login via evaluating sign-in button presence
     const needsLogin = await page.evaluate(() => {
-      const texts = Array.from(document.querySelectorAll('button, a')).map(e => e.textContent || '');
-      return texts.some(t => /Sign\s?in/i.test(t));
+      return !!Array.from(document.querySelectorAll('button, a')).find(el => /sign\s?in/i.test(el.textContent));
     });
     if (needsLogin) {
-      console.log('Detected Sign in link/button. Cookies expired.');
+      console.error('Session invalid or expired. Please refresh cookies manually.');
       await browser.close();
-      cookies = await refreshCookies(origin);
-      browser = await puppeteer.launch({ headless: true });
-      page = await browser.newPage();
-      await page.goto(origin, { waitUntil: 'networkidle2' });
-      await page.setCookie(...cookies);
-      await page.reload({ waitUntil: 'networkidle2' });
+      process.exit(1);
     }
+    console.log('Session is valid');
 
-    // Navigate to faucet page
+    // 4. Navigate to faucet page
     await page.goto(FAUCET_URL, { waitUntil: 'networkidle2' });
     console.log('At faucet page');
 
-    // Enter wallet address
+    // 5. Enter wallet address
     await page.waitForSelector('input', { visible: true });
+    await page.click('input', { clickCount: 3 });
     await page.type('input', WALLET_ADDRESS, { delay: 100 });
     console.log('Wallet address entered');
 
-    // Click Receive button via evaluating in page context
+    // 6. Click Receive button
     await page.evaluate(() => {
       const btn = Array.from(document.querySelectorAll('button')).find(b =>
         b.textContent.includes('Receive') && b.textContent.includes('Sepolia')
@@ -87,24 +69,23 @@ if (!WALLET_ADDRESS) {
     });
     console.log('Clicked Receive button');
 
-    // Debug dump
+    // 7. Debug dump
     await page.screenshot({ path: DUMP_SCREENSHOT_PATH, fullPage: true });
     fs.writeFileSync(DUMP_HTML_PATH, await page.content(), 'utf-8');
     console.log('Saved debug dump');
 
-    // Wait for TX hash element
+    // 8. Wait for transaction hash
     const txHash = await page.evaluate(() => new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('TX hash timeout')), 120000);
       const obs = new MutationObserver(() => {
-        const link = Array.from(document.querySelectorAll('a')).find(a =>
-          /etherscan\.io\/tx/.test(a.href)
-        );
+        const link = Array.from(document.querySelectorAll('a')).find(a => /etherscan\.io\/tx/.test(a.href));
         if (link) {
+          clearTimeout(timeout);
           obs.disconnect();
           resolve(link.textContent.trim());
         }
       });
       obs.observe(document.body, { childList: true, subtree: true });
-      setTimeout(() => reject(new Error('TX hash timeout')), 120000);
     }));
     console.log(`Claim successful: ${txHash}`);
 
