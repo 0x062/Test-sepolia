@@ -50,31 +50,49 @@ if (!WALLET_ADDRESS) {
     await input.type(WALLET_ADDRESS, { delay: 100 });
     console.log('Entered wallet address');
 
-    // 5. Klik tombol Claim
-    const buttons = await page.$$('button');
-    const btn = await findFirstVisible(buttons, page);
-    if (!btn) throw new Error('No visible button found');
-    await btn.click();
-    console.log('Clicked claim button');
+    // … (inizialisasi, load cookies, navigasi, isi address)
+// 5. Klik tombol secara eksplisit:
+await page.click(
+  'pierce/web3-faucet >>> button:has-text("Receive 0.05 Sepolia ETH")'
+);
+console.log('Clicked precise Receive button');
 
-    // 6. Debug: take screenshot and dump HTML
-    await page.screenshot({ path: DUMP_SCREENSHOT_PATH, fullPage: true });
-    const bodyHTML = await page.evaluate(() => document.body.innerHTML);
-    fs.writeFileSync(DUMP_HTML_PATH, bodyHTML, 'utf-8');
-    console.log(`HTML dump saved to ${DUMP_HTML_PATH}`);
-    console.log(`Screenshot saved to ${DUMP_SCREENSHOT_PATH}`);
+// 6. Dump HTML & screenshot (optional)
+await page.screenshot({ path: DUMP_SCREENSHOT_PATH, fullPage: true });
+fs.writeFileSync(DUMP_HTML_PATH,
+  await page.evaluate(() => document.body.innerHTML),
+  'utf-8'
+);
 
-    // 7. Tunggu dan ekstrak TX hash via piercing selector
-    await page.waitForSelector(
-      'pierce/web3-faucet >>> a[href*="etherscan.io/tx"]',
-      { timeout: 120_000 }
-    );
-    const txHash = await page.$eval(
-      'pierce/web3-faucet >>> a[href*="etherscan.io/tx"]',
-      el => el.textContent.trim()
-    );
-    console.log(`✅ Claimed! TX hash: ${txHash}`);
+// 7. Tunggu TX hash via MutationObserver
+let txHash;
+try {
+  txHash = await page.evaluate(() => {
+    const faucet = document.querySelector('web3-faucet');
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error('Timeout: tidak dapat TX hash')),
+        120_000
+      );
+      const obs = new MutationObserver(() => {
+        const link = faucet.shadowRoot.querySelector(
+          'a[href*="etherscan.io/tx"]'
+        );
+        if (link?.textContent.trim()) {
+          clearTimeout(timeout);
+          obs.disconnect();
+          resolve(link.textContent.trim());
+        }
+      });
+      obs.observe(faucet.shadowRoot, { childList: true, subtree: true });
+    });
+  });
+  console.log(`✅ Claimed! TX hash: ${txHash}`);
+} catch (e) {
+  console.error('Gagal mendapatkan TX hash:', e);
+}
 
+    
     await browser.close();
   } catch (err) {
     console.error('Error:', err);
