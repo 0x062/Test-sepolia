@@ -50,23 +50,13 @@ if (!WALLET_ADDRESS) {
     await input.type(WALLET_ADDRESS, { delay: 100 });
     console.log('Entered wallet address');
 
-    // 5. Find correct iframe containing the faucet widget
-    const frame = page.frames().find(f => f.url().includes('web3/faucet'));
-    if (!frame) throw new Error('Faucet frame not found');
-
-    // 6. Click the claim button inside the frame's shadow DOM
-    await frame.waitForSelector('web3-faucet', { timeout: 60000 });
-    await frame.evaluate(() => {
-      const faucetEl = document.querySelector('web3-faucet');
-      const root = faucetEl.shadowRoot;
-      const btn = Array.from(root.querySelectorAll('button'))
-        .find(b => b.textContent.includes('Receive 0.05 Sepolia ETH'));
-      if (!btn) throw new Error('Claim button not found');
-      btn.click();
-    });
+    // 5. Click the "Receive 0.05 Sepolia ETH" button via XPath
+    const [btn] = await page.$x("//button[contains(., 'Receive 0.05 Sepolia ETH')]");
+    if (!btn) throw new Error('Receive button not found');
+    await btn.click();
     console.log('Clicked "Receive 0.05 Sepolia ETH" button');
 
-    // 7. Dump HTML & screenshot for debugging
+    // 6. Dump HTML & screenshot for debugging
     await page.screenshot({ path: DUMP_SCREENSHOT_PATH, fullPage: true });
     fs.writeFileSync(
       DUMP_HTML_PATH,
@@ -75,19 +65,19 @@ if (!WALLET_ADDRESS) {
     );
     console.log('Dumped HTML & screenshot');
 
-    // 8. Wait for TX hash inside frame
-    const txHash = await frame.evaluate(() => {
+    // 7. Wait for TX hash via MutationObserver in page context
+    const txHash = await page.evaluate(() => {
       return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Timeout waiting for TX hash')), 120000);
         const obs = new MutationObserver(() => {
-          const link = document.querySelector('web3-faucet')
-            .shadowRoot.querySelector('a[href*="etherscan.io/tx"]');
+          const link = document.querySelector('a[href*="etherscan.io/tx"]');
           if (link?.textContent.trim()) {
+            clearTimeout(timeout);
             obs.disconnect();
             resolve(link.textContent.trim());
           }
         });
-        obs.observe(document, { childList: true, subtree: true });
-        setTimeout(() => reject(new Error('Timeout waiting for TX hash')), 120000);
+        obs.observe(document.body, { childList: true, subtree: true });
       });
     });
     console.log(`✅ Claimed! TX hash: ${txHash}`);
