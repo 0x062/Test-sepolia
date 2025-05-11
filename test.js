@@ -38,8 +38,8 @@ if (!WALLET_ADDRESS) {
     await page.goto(faucetUrl, { waitUntil: 'networkidle2' });
     console.log(`Navigated to ${faucetUrl}`);
 
-    // Wait for dynamic load
-    await page.waitForTimeout(5000);
+    // Wait for dynamic load (use custom delay)
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
     // Find frame containing web3-faucet
     let faucetFrame = null;
@@ -54,10 +54,11 @@ if (!WALLET_ADDRESS) {
       throw new Error('web3-faucet element not found in any frame');
     }
 
-    // Fill wallet address via shadow DOM, using placeholder selector
+    // Fill wallet address via shadow DOM using placeholder selector
     await faucetFrame.evaluate((addr) => {
       const faucet = document.querySelector('web3-faucet');
       const input = faucet.shadowRoot.querySelector('input[placeholder="Wallet address or ENS name*"]');
+      if (!input) throw new Error('Input element not found');
       input.value = addr;
       input.dispatchEvent(new Event('input', { bubbles: true }));
       console.log('Wallet address set');
@@ -67,11 +68,13 @@ if (!WALLET_ADDRESS) {
     await faucetFrame.evaluate(() => {
       const faucet = document.querySelector('web3-faucet');
       const button = faucet.shadowRoot.querySelector('button');
+      if (!button) throw new Error('Claim button not found');
       button.click();
       console.log('Clicked claim');
     });
 
     // Wait and extract transaction hash
+    await new Promise(resolve => setTimeout(resolve, 5000));
     const txHash = await faucetFrame.evaluate(() => {
       const faucet = document.querySelector('web3-faucet');
       const link = faucet.shadowRoot.querySelector('a[href*="etherscan.io/tx"]');
