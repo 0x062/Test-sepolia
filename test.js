@@ -7,7 +7,9 @@ const path = require('path');
 
 // ================= Configuration =================
 const WALLET_ADDRESS = process.env.WALLET_ADDRESS;
-const COOKIES_PATH = process.env.COOKIES_PATH || path.resolve(__dirname, 'script-cookies.json');
+const COOKIES_PATH = process.env.COOKIES_PATH
+  ? path.resolve(__dirname, process.env.COOKIES_PATH)
+  : path.resolve(__dirname, 'script-cookies.json');
 const FAUCET_URL = 'https://cloud.google.com/application/web3/faucet/ethereum/sepolia';
 
 if (!WALLET_ADDRESS) {
@@ -17,73 +19,62 @@ if (!WALLET_ADDRESS) {
 
 (async () => {
   try {
-    // Resolve and load cookies
-    const cookiePath = path.resolve(__dirname, process.env.COOKIES_PATH);
-    if (!fs.existsSync(cookiePath)) {
-      throw new Error(`Cookie file not found at ${cookiePath}`);
+    // 1. Load cookies
+    if (!fs.existsSync(COOKIES_PATH)) {
+      throw new Error(`Cookie file not found at ${COOKIES_PATH}`);
     }
-    const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf-8'));
-    console.log(`Loaded ${cookies.length} cookies from ${cookiePath}`);
+    const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
+    console.log(`Loaded ${cookies.length} cookies from ${COOKIES_PATH}`);
 
-    // Launch browser
+    // 2. Launch browser & set cookies
     const browser = await puppeteer.launch({ headless: true });
     const page = await browser.newPage();
 
-    // Navigate to origin and set cookies, then reload
     const origin = new URL(FAUCET_URL).origin;
     await page.goto(origin, { waitUntil: 'networkidle2' });
     await page.setCookie(...cookies);
     console.log('Cookies set, refreshing to apply authentication...');
     await page.reload({ waitUntil: 'networkidle2' });
 
-    // Navigate to faucet page and reload
+    // 3. Navigate to faucet
     await page.goto(FAUCET_URL, { waitUntil: 'networkidle2' });
-    await page.reload({ waitUntil: 'networkidle2' });
-    console.log(`Navigated and reloaded ${FAUCET_URL}`);
+    console.log(`Navigated to ${FAUCET_URL}`);
 
-    // Short delay
-    await new Promise(res => setTimeout(res, 3000));
-
-    // Utility to find first visible element
-    async function findFirstVisible(handles) {
-      for (const handle of handles) {
-        const box = await handle.boundingBox();
-        if (box && box.width > 0 && box.height > 0) {
-          return handle;
-        }
-      }
-      return null;
-    }
-
-    // Fill wallet address
-    const inputHandles = await page.$$('input');
-    const inputHandle = await findFirstVisible(inputHandles);
-    if (!inputHandle) throw new Error('No visible input found');
-    await inputHandle.click({ clickCount: 3 });
-    await inputHandle.type(WALLET_ADDRESS, { delay: 100 });
+    // 4. Isi wallet address
+    //    cari input pertama yang terlihat
+    const inputs = await page.$$('input');
+    const input = inputs.find(async h => {
+      const b = await h.boundingBox();
+      return b && b.width > 0 && b.height > 0;
+    });
+    if (!input) throw new Error('No visible input found');
+    await input.click({ clickCount: 3 });
+    await input.type(WALLET_ADDRESS, { delay: 100 });
     console.log('Entered wallet address');
 
-    // Click claim button
-    const buttonHandles = await page.$$('button');
-    const buttonHandle = await findFirstVisible(buttonHandles);
-    if (!buttonHandle) throw new Error('No visible button found');
-    await buttonHandle.click();
+    // 5. Klik tombol Claim pertama yang terlihat
+    const buttons = await page.$$('button');
+    const btn = buttons.find(async h => {
+      const b = await h.boundingBox();
+      return b && b.width > 0 && b.height > 0;
+    });
+    if (!btn) throw new Error('No visible button found');
+    await btn.click();
     console.log('Clicked claim button');
 
-    // Wait for TX hash in shadow DOM
-    await page.waitForFunction(() => {
-      const faucet = document.querySelector('web3-faucet');
-      if (!faucet || !faucet.shadowRoot) return false;
-      const link = faucet.shadowRoot.querySelector('a[href*="etherscan.io/tx"]');
-      return link && link.textContent.trim().length > 0;
-    }, { timeout: 60000 });
+    // 6. (Debug) ambil screenshot dan dump HTML sebelum menunggu TX
+    await page.screenshot({ path: 'debug_after_claim.png', fullPage: true });
+    console.log('DEBUG HTML snippet:', (await page.evaluate(() => document.body.innerHTML))).slice(0,200);
 
-    // Extract transaction hash from shadow DOM
-    const txHash = await page.evaluate(() => {
-      const faucet = document.querySelector('web3-faucet');
-      const link = faucet.shadowRoot.querySelector('a[href*="etherscan.io/tx"]');
-      return link.textContent.trim();
-    });
+    // 7. Tunggu dan ekstrak TX hash via piercing selector
+    await page.waitForSelector(
+      'pierce/web3-faucet >>> a[href*="etherscan.io/tx"]',
+      { timeout: 120_000 }
+    );
+    const txHash = await page.$eval(
+      'pierce/web3-faucet >>> a[href*="etherscan.io/tx"]',
+      el => el.textContent.trim()
+    );
     console.log(`✅ Claimed! TX hash: ${txHash}`);
 
     await browser.close();
