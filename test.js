@@ -51,8 +51,8 @@ if (!WALLET_ADDRESS) {
     console.log('Entered wallet address');
 
     // 5. Tunggu elemen web3-faucet dan klik tombol via traversal shadow DOM
-    // Ganti page.waitForTimeout yang tidak tersedia
-    await new Promise(resolve => setTimeout(resolve, 2000)); // beri sedikit waktu render
+    // Break waktu render tanpa waitForTimeout
+    await new Promise(resolve => setTimeout(resolve, 2000));
     await page.evaluate(() => {
       function findInShadow(root) {
         if (root.querySelector && root.shadowRoot) {
@@ -125,7 +125,8 @@ if (!WALLET_ADDRESS) {
   }
 })();
 
-// Utility function for visibility check\async function findFirstVisible(handles, page) {
+// Utility function for visibility check
+async function findFirstVisible(handles, page) {
   for (const handle of handles) {
     const box = await handle.boundingBox();
     if (box && box.width > 0 && box.height > 0) {
