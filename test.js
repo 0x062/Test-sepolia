@@ -21,108 +21,96 @@ if (!WALLET_ADDRESS) {
 
 (async () => {
   try {
-    // Function to refresh cookies via manual login
+    // Manual login to refresh cookies if needed
     async function refreshCookies(origin) {
-      console.log('Opening browser for manual login...');
+      console.log('Please login in the opened browser window...');
       const browserManual = await puppeteer.launch({ headless: false });
       const pageManual = await browserManual.newPage();
       await pageManual.goto(origin, { waitUntil: 'networkidle2' });
-      console.log('Please complete Google login, then press ENTER in this terminal');
-      await new Promise(resolve => {
-        process.stdin.resume();
-        process.stdin.once('data', () => resolve());
-      });
+      console.log('Complete login and then press ENTER here.');
+      await new Promise(resolve => process.stdin.once('data', resolve));
       const newCookies = await pageManual.cookies();
       fs.writeFileSync(COOKIES_PATH, JSON.stringify(newCookies, null, 2));
-      console.log(`Saved cookies to ${COOKIES_PATH}`);
       await browserManual.close();
       return newCookies;
     }
 
-    // Determine or refresh cookies
+    // Prepare cookies
     const origin = new URL(FAUCET_URL).origin;
-    let loadedCookies;
+    let cookies;
     if (!fs.existsSync(COOKIES_PATH)) {
-      loadedCookies = await refreshCookies(origin);
+      cookies = await refreshCookies(origin);
     } else {
-      loadedCookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
-      console.log(`Loaded ${loadedCookies.length} cookies from ${COOKIES_PATH}`);
+      cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
+      console.log(`Loaded ${cookies.length} cookies`);
     }
 
-    // Launch headless browser
+    // Launch headless
     let browser = await puppeteer.launch({ headless: true });
     let page = await browser.newPage();
-
-    // Apply cookies and reload
     await page.goto(origin, { waitUntil: 'networkidle2' });
-    await page.setCookie(...loadedCookies);
-    console.log('Cookies set, reloading to apply session...');
+    await page.setCookie(...cookies);
     await page.reload({ waitUntil: 'networkidle2' });
 
-    // Validate login: check for Sign in button
-    const [signIn] = await page.$x("//button[contains(., 'Sign in')] | //a[contains(., 'Sign in')]");
-    if (signIn) {
-      console.log('Sign in button detected. Session invalid, refreshing cookies...');
+    // Check login via evaluating sign-in button presence
+    const needsLogin = await page.evaluate(() => {
+      const texts = Array.from(document.querySelectorAll('button, a')).map(e => e.textContent || '');
+      return texts.some(t => /Sign\s?in/i.test(t));
+    });
+    if (needsLogin) {
+      console.log('Detected Sign in link/button. Cookies expired.');
       await browser.close();
-      loadedCookies = await refreshCookies(origin);
+      cookies = await refreshCookies(origin);
       browser = await puppeteer.launch({ headless: true });
       page = await browser.newPage();
       await page.goto(origin, { waitUntil: 'networkidle2' });
-      await page.setCookie(...loadedCookies);
+      await page.setCookie(...cookies);
       await page.reload({ waitUntil: 'networkidle2' });
     }
 
-    // Navigate to faucet
+    // Navigate to faucet page
     await page.goto(FAUCET_URL, { waitUntil: 'networkidle2' });
-    console.log(`Navigated to ${FAUCET_URL}`);
+    console.log('At faucet page');
 
     // Enter wallet address
-    const inputs = await page.$$('input');
-    const input = await findFirstVisible(inputs, page);
-    if (!input) throw new Error('No visible input found');
-    await input.click({ clickCount: 3 });
-    await input.type(WALLET_ADDRESS, { delay: 100 });
-    console.log('Entered wallet address');
+    await page.waitForSelector('input', { visible: true });
+    await page.type('input', WALLET_ADDRESS, { delay: 100 });
+    console.log('Wallet address entered');
 
-    // Click Receive button via XPath + waitForXPath
-    const xpath = "//button[contains(text(), 'Receive 0.05 Sepolia ETH')]";
-    const btnHandle = await page.waitForXPath(xpath, { timeout: 10000 });
-    if (!btnHandle) throw new Error('Receive button not found');
-    await btnHandle.click();
-    console.log('Clicked "Receive 0.05 Sepolia ETH" button');
+    // Click Receive button via evaluating in page context
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find(b =>
+        b.textContent.includes('Receive') && b.textContent.includes('Sepolia')
+      );
+      if (!btn) throw new Error('Receive button not found');
+      btn.click();
+    });
+    console.log('Clicked Receive button');
 
     // Debug dump
     await page.screenshot({ path: DUMP_SCREENSHOT_PATH, fullPage: true });
-    fs.writeFileSync(DUMP_HTML_PATH, await page.evaluate(() => document.body.innerHTML), 'utf-8');
-    console.log('Dumped HTML & screenshot');
+    fs.writeFileSync(DUMP_HTML_PATH, await page.content(), 'utf-8');
+    console.log('Saved debug dump');
 
-    // Wait for transaction hash
+    // Wait for TX hash element
     const txHash = await page.evaluate(() => new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timeout waiting for TX hash')), 120000);
       const obs = new MutationObserver(() => {
-        const link = document.querySelector('a[href*="etherscan.io/tx"]');
-        if (link?.textContent.trim()) {
-          clearTimeout(timeout);
+        const link = Array.from(document.querySelectorAll('a')).find(a =>
+          /etherscan\.io\/tx/.test(a.href)
+        );
+        if (link) {
           obs.disconnect();
           resolve(link.textContent.trim());
         }
       });
       obs.observe(document.body, { childList: true, subtree: true });
+      setTimeout(() => reject(new Error('TX hash timeout')), 120000);
     }));
-    console.log(`✅ Claimed! TX hash: ${txHash}`);
+    console.log(`Claim successful: ${txHash}`);
 
     await browser.close();
-  } catch (err) {
-    console.error('Error:', err);
+  } catch (e) {
+    console.error('Error:', e);
     process.exit(1);
   }
 })();
-
-// Helper: find first visible element
-async function findFirstVisible(handles, page) {
-  for (const handle of handles) {
-    const box = await handle.boundingBox();
-    if (box && box.width > 0 && box.height > 0) return handle;
-  }
-  return null;
-}
