@@ -21,54 +21,63 @@ if (!WALLET_ADDRESS) {
 
 (async () => {
   try {
-    // 0. Ensure cookies and authentication
+    // Function to refresh cookies by manual login
     async function refreshCookies(origin) {
       console.log('Opening browser for manual login...');
       const browser = await puppeteer.launch({ headless: false });
       const page = await browser.newPage();
       await page.goto(origin, { waitUntil: 'networkidle2' });
-      console.log('Please complete Google login in the opened browser, then press ENTER here');
+      console.log('Please complete Google login, then press ENTER in this terminal');
       await new Promise(resolve => {
         process.stdin.resume();
         process.stdin.once('data', () => resolve());
       });
       const newCookies = await page.cookies();
       fs.writeFileSync(COOKIES_PATH, JSON.stringify(newCookies, null, 2));
-      console.log(`Saved new cookies to ${COOKIES_PATH}`);
+      console.log(`Saved cookies to ${COOKIES_PATH}`);
       await browser.close();
+      return newCookies;
     }
 
+    // Determine or refresh cookies
     const origin = new URL(FAUCET_URL).origin;
-    // If no cookie file or expired, refresh
+    let loadedCookies;
     if (!fs.existsSync(COOKIES_PATH)) {
-      await refreshCookies(origin);
+      loadedCookies = await refreshCookies(origin);
+    } else {
+      loadedCookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
+      console.log(`Loaded ${loadedCookies.length} cookies from ${COOKIES_PATH}`);
     }
-    const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
-    console.log(`Loaded ${cookies.length} cookies from ${COOKIES_PATH}`);
 
-    // 1. Launch browser & set cookies
-    // 1. Load cookies
-    if (!fs.existsSync(COOKIES_PATH)) {
-      throw new Error(`Cookie file not found at ${COOKIES_PATH}`);
-    }
-    const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
-    console.log(`Loaded ${cookies.length} cookies from ${COOKIES_PATH}`);
-
-    // 2. Launch browser & set cookies
+    // 1. Launch headless browser and apply cookies
     const browser = await puppeteer.launch({ headless: true });
     const page = await browser.newPage();
-
-    const origin = new URL(FAUCET_URL).origin;
     await page.goto(origin, { waitUntil: 'networkidle2' });
-    await page.setCookie(...cookies);
-    console.log('Cookies set, refreshing...');
+    await page.setCookie(...loadedCookies);
+    console.log('Cookies set, reloading to apply session...');
     await page.reload({ waitUntil: 'networkidle2' });
 
-    // 3. Navigate to faucet
+    // 2. Check for Sign In button indicating expired session
+    const signIn = await page.$x("//button[contains(., 'Sign in')] | //a[contains(., 'Sign in')]");
+    if (signIn.length > 0) {
+      console.log('Sign in button detected. Session expired or not logged in. Refreshing cookies...');
+      await browser.close();
+      loadedCookies = await refreshCookies(origin);
+      // Relaunch headless browser with new cookies
+      const newBrowser = await puppeteer.launch({ headless: true });
+      const newPage = await newBrowser.newPage();
+      await newPage.goto(origin, { waitUntil: 'networkidle2' });
+      await newPage.setCookie(...loadedCookies);
+      await newPage.reload({ waitUntil: 'networkidle2' });
+      page = newPage;
+      browser = newBrowser;
+    }
+
+    // 3. Navigate to faucet page
     await page.goto(FAUCET_URL, { waitUntil: 'networkidle2' });
     console.log(`Navigated to ${FAUCET_URL}`);
 
-    // 4. Enter wallet address
+    // 4. Fill wallet address
     const inputs = await page.$$('input');
     const input = await findFirstVisible(inputs, page);
     if (!input) throw new Error('No visible input found');
@@ -76,13 +85,13 @@ if (!WALLET_ADDRESS) {
     await input.type(WALLET_ADDRESS, { delay: 100 });
     console.log('Entered wallet address');
 
-    // 5. Click the "Receive 0.05 Sepolia ETH" button via XPath
+    // 5. Click Receive button via XPath
     const [btn] = await page.$x("//button[contains(., 'Receive 0.05 Sepolia ETH')]");
     if (!btn) throw new Error('Receive button not found');
     await btn.click();
     console.log('Clicked "Receive 0.05 Sepolia ETH" button');
 
-    // 6. Dump HTML & screenshot for debugging
+    // 6. Debug dump
     await page.screenshot({ path: DUMP_SCREENSHOT_PATH, fullPage: true });
     fs.writeFileSync(
       DUMP_HTML_PATH,
@@ -91,21 +100,19 @@ if (!WALLET_ADDRESS) {
     );
     console.log('Dumped HTML & screenshot');
 
-    // 7. Wait for TX hash via MutationObserver in page context
-    const txHash = await page.evaluate(() => {
-      return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Timeout waiting for TX hash')), 120000);
-        const obs = new MutationObserver(() => {
-          const link = document.querySelector('a[href*="etherscan.io/tx"]');
-          if (link?.textContent.trim()) {
-            clearTimeout(timeout);
-            obs.disconnect();
-            resolve(link.textContent.trim());
-          }
-        });
-        obs.observe(document.body, { childList: true, subtree: true });
+    // 7. Wait for transaction hash
+    const txHash = await page.evaluate(() => new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timeout waiting for TX hash')), 120000);
+      const obs = new MutationObserver(() => {
+        const link = document.querySelector('a[href*="etherscan.io/tx"]');
+        if (link?.textContent.trim()) {
+          clearTimeout(timeout);
+          obs.disconnect();
+          resolve(link.textContent.trim());
+        }
       });
-    });
+      obs.observe(document.body, { childList: true, subtree: true });
+    }));
     console.log(`✅ Claimed! TX hash: ${txHash}`);
 
     await browser.close();
@@ -115,7 +122,7 @@ if (!WALLET_ADDRESS) {
   }
 })();
 
-// Utility: get first visible element
+// Helper: find first visible element
 async function findFirstVisible(handles, page) {
   for (const handle of handles) {
     const box = await handle.boundingBox();
