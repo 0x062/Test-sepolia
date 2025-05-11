@@ -50,16 +50,28 @@ if (!WALLET_ADDRESS) {
     await input.type(WALLET_ADDRESS, { delay: 100 });
     console.log('Entered wallet address');
 
-    // 5. Klik tombol klaim via shadow DOM
+    // 5. Tunggu elemen web3-faucet dan klik tombol via traversal shadow DOM
+    await page.waitForTimeout(2000); // beri sedikit waktu render
     await page.evaluate(() => {
-      const faucet = document.querySelector('web3-faucet');
-      if (!faucet) throw new Error('web3-faucet element not found');
-      const shadow = faucet.shadowRoot;
-      const buttons = shadow.querySelectorAll('button');
-      const btn = Array.from(buttons).find(b =>
-        b.textContent.includes('Receive 0.05 Sepolia ETH')
-      );
-      if (!btn) throw new Error('Claim button not found');
+      function findInShadow(root) {
+        // search direct shadow root
+        if (root.querySelector && root.shadowRoot) {
+          const btns = Array.from(root.shadowRoot.querySelectorAll('button'));
+          const found = btns.find(b => b.textContent.includes('Receive 0.05 Sepolia ETH'));
+          if (found) return found;
+        }
+        // search children
+        const children = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
+        for (const el of children) {
+          if (el.shadowRoot) {
+            const res = findInShadow(el);
+            if (res) return res;
+          }
+        }
+        return null;
+      }
+      const btn = findInShadow(document);
+      if (!btn) throw new Error('Claim button not found in any shadow DOM');
       btn.click();
     });
     console.log('Clicked "Receive 0.05 Sepolia ETH" button');
@@ -77,24 +89,31 @@ if (!WALLET_ADDRESS) {
     let txHash;
     try {
       txHash = await page.evaluate(() => {
-        const faucet = document.querySelector('web3-faucet');
-        return new Promise((resolve, reject) => {
-          const timeout = setTimeout(
-            () => reject(new Error('Timeout: tidak dapat TX hash')),
-            120_000
-          );
-          const obs = new MutationObserver(() => {
-            const link = faucet.shadowRoot.querySelector(
-              'a[href*="etherscan.io/tx"]'
-            );
-            if (link?.textContent.trim()) {
-              clearTimeout(timeout);
-              obs.disconnect();
-              resolve(link.textContent.trim());
-            }
+        function observeShadow(root) {
+          return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error('Timeout waiting for TX hash')), 120_000);
+            const obs = new MutationObserver(() => {
+              const link = root.querySelector('a[href*="etherscan.io/tx"]');
+              if (link?.textContent.trim()) {
+                clearTimeout(timeout);
+                obs.disconnect();
+                resolve(link.textContent.trim());
+              }
+            });
+            obs.observe(root, { childList: true, subtree: true });
           });
-          obs.observe(faucet.shadowRoot, { childList: true, subtree: true });
-        });
+        }
+        // find shadow root containing faucet
+        let faucetShadow;
+        const hosts = document.querySelectorAll('*');
+        for (const el of hosts) {
+          if (el.shadowRoot && el.tagName.toLowerCase().includes('faucet')) {
+            faucetShadow = el.shadowRoot;
+            break;
+          }
+        }
+        if (!faucetShadow) throw new Error('Shadow root for faucet not found');
+        return observeShadow(faucetShadow);
       });
       console.log(`✅ Claimed! TX hash: ${txHash}`);
     } catch (e) {
