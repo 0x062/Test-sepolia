@@ -6,12 +6,14 @@ on:
     - cron: '0 12 * * *'
   workflow_dispatch:
 
-jobs:
+  jobs:
   auto_commit:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
+        with:
+          persist-credentials: true   # <-- biar token otomatis disertakan
 
       - name: Update timestamp file
         run: |
@@ -22,5 +24,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add timestamp.txt
-          git commit -m "Auto-update: $(date -u '+%Y-%m-%d')" || echo "No changes to commit"
-          git push
+          git commit -m "Auto-update: $(date -u '+%Y-%m-%d %H:%M UTC')" || echo "No changes to commit"
+          git push                      # sekarang punya credential untuk push
